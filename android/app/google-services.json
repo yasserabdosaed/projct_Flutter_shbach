@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "405331138686",
+    "project_id": "shabakat-app",
+    "storage_bucket": "shabakat-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:405331138686:android:0d0652c055706701d8e02f",
+        "android_client_info": {
+          "package_name": "com.shabakat.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCSSRetwu9RRFc4maRmrGsmGcMYMIL_ARQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
