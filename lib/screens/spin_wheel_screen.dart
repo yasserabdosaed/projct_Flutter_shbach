@@ -19,6 +19,8 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
   late Animation<double> _spinAnimation;
   bool _isSpinning = false;
   SpinPrize? _wonPrize;
+  String? _drawnCard; // الكرت الحقيقي المسحوب من مخزون الصنف الفائز
+  bool _noCardsAvailable = false;
   bool _wheelAvailable = false;
   List<SpinPrize> _currentPrizes = [];
   int _selectedTab = 0; // 0: صغيرة, 1: كبيرة
@@ -55,12 +57,48 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
     );
     _spinController.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
-        final prize = _getRandomPrize();
-        setState(() {
-          _isSpinning = false;
-          _wonPrize = prize;
-          _wheelSpun = true;
-        });
+        _finalizeSpin();
+      }
+    });
+  }
+
+  // عند اكتمال دوران العجلة: نختار صنفاً (وزنياً) ثم نسحب كرتاً حقيقياً
+  // من مخزونه. إذا المخزون فارغ نعاود اختيار صنف آخر متاح.
+  Future<void> _finalizeSpin() async {
+    final provider = context.read<AppProvider>();
+    String? drawn;
+    SpinPrize? chosen;
+
+    for (int attempt = 0; attempt < _currentPrizes.length + 1; attempt++) {
+      chosen = _getRandomPrize();
+      // اطلب السحب الذري من Firebase
+      drawn = await provider.drawPrizeCard(chosen.id);
+      if (drawn != null) break;
+      // هذا الصنف فرغ مخزونه أو تعذّر الاتصال؛ جرّب صنفاً آخر
+    }
+
+    // ===== حماية صارمة ضد الغش/النصب =====
+    // بمجرد استلام كرت حقيقي فعلياً (سحب ذرّي أُزيل من المخزون) تُستهلك
+    // الدوّارة فوراً ويعود عدّادها إلى الصفر — حتى لو أُغلق التطبيق بعدها
+    // أو لم ينسخ المستخدم الكرت. فلا يمكن تدويرها ثانيةً دون شراء 5 كروت جديدة.
+    if (drawn != null) {
+      final category = _selectedTab == 0 ? 'small' : 'large';
+      await provider.resetSpinWheel(category: category);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isSpinning = false;
+      _wheelSpun = true;
+      if (drawn != null) {
+        _wonPrize = chosen;
+        _drawnCard = drawn;
+        _noCardsAvailable = false;
+      } else {
+        // المخزون فارغ في كل الأصناف أو فشل الاتصال بالسحاب
+        _wonPrize = null;
+        _drawnCard = null;
+        _noCardsAvailable = true;
       }
     });
   }
@@ -75,9 +113,80 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
     if (_currentPrizes.isEmpty) {
       return SpinPrize(id: '0', name: 'لا توجد جوائز', value: '', type: 'small');
     }
-    final random = Random();
-    final index = random.nextInt(_currentPrizes.length);
-    return _currentPrizes[index];
+
+    // وزن جائزة عادية = حسب قيمتها (الجوائز الأكبر قيمةً احتمالية فوزها أقل).
+    double weightOf(SpinPrize p) {
+      final value = double.tryParse(p.value) ?? 0;
+      if (value <= 0) return 1.0; // جوائز بدون قيمة (مثل هدايا عينية) وزن متوسط
+      return _weightForValue(value);
+    }
+
+    // جائزة الـ1 جيجا (1000 أو 1024 ميجا): احتمال فوز ثابت ~20% من إجمالي
+    // السحبات، مهما اختلفت بقية الجوائز (وزنها = 25% من مجموع أوزان البقية،
+    // أي 25/125 = 20% من الكل).
+    final gigs = _currentPrizes.where(_isOneGigPrize).toList();
+    final others = _currentPrizes.where((p) => !gigs.contains(p)).toList();
+
+    if (gigs.isNotEmpty && others.isNotEmpty) {
+      final othersWeight = others.fold(0.0, (s, p) => s + weightOf(p));
+      final gigWeightPer = (othersWeight * 0.25) / gigs.length;
+
+      final entries = <(SpinPrize, double)>[
+        for (final g in gigs) (g, gigWeightPer),
+        for (final o in others) (o, weightOf(o)),
+      ];
+      final total = entries.fold<double>(0, (s, e) => s + e.$2);
+      var roll = Random().nextDouble() * total;
+      for (final (prize, w) in entries) {
+        roll -= w;
+        if (roll <= 0) return prize;
+      }
+      return entries.last.$1;
+    }
+
+    // بدون جائزة 1 جيجا (أو كانت كلها 1 جيجا): الاختيار الموزون العادي.
+    final weights = _currentPrizes.map(weightOf).toList();
+
+    final totalWeight = weights.fold(0.0, (sum, w) => sum + w);
+    if (totalWeight <= 0) {
+      final random = Random();
+      return _currentPrizes[random.nextInt(_currentPrizes.length)];
+    }
+
+    var roll = Random().nextDouble() * totalWeight;
+    for (int i = 0; i < _currentPrizes.length; i++) {
+      roll -= weights[i];
+      if (roll <= 0) {
+        return _currentPrizes[i];
+      }
+    }
+    return _currentPrizes.last;
+  }
+
+  /// هل هذه الجائزة هي «1 جيجا»؟ تُخزَّن أحياناً 1000 وأحياناً 1024.
+  bool _isOneGigPrize(SpinPrize p) {
+    final value = double.tryParse(p.value) ?? 0;
+    return value == 1000 || value == 1024;
+  }
+
+  /// يحسب احتمال (وزن) جائزة حسب قيمتها بالميجابايت.
+  /// كلما زادت القيمة، قلّت النسبة/الوزن. الجوائز الكبيرة (7000+) تصبح نادرة
+  /// جداً لكنها تبقى ممكنة، والجوائز الصغيرة تبقى الأسهل.
+  double _weightForValue(double mb) {
+    if (mb <= 0) return 1.0;
+    // الجوائز الكبيرة جداً (7 جيجا و 10 جيجا): نادرة للغاية - وزنها يُقسَّم على 100
+    // فيصبح احتمال الفوز بأيٍّ منهما أقل من 1% تقريباً (تعتبر جائزة كبرى).
+    if (mb >= 7000) return (100.0 / (mb + 50.0)) / 100.0;
+    // أمثلة تقريبية على نسب الفوز مع مجموعة كبيرة (1500, 3000, 7000, 10240):
+    //   1500 ميجا  ~ 30%
+    //   3000 ميجا  ~ 16%
+    //   7000 ميجا  ~ 0.15%
+    //   10240 ميجا ~ 0.10%
+    // الأمثلة أدنى مع مجموعة صغيرة (300, 600):
+    //   300 ميجا  ~ 52%  (الأسهل)
+    //   600 ميجا  ~ 28%
+    // أما الـ1 جيجا (1000/1024) فله نسبة ثابتة ~20% تُحسب في _getRandomPrize.
+    return 100.0 / (mb + 50.0);
   }
 
   void _spin() {
@@ -85,6 +194,8 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
     setState(() {
       _isSpinning = true;
       _wonPrize = null;
+      _drawnCard = null;
+      _noCardsAvailable = false;
       _copied = false;
     });
     final random = Random().nextDouble() * 2 * pi;
@@ -93,21 +204,30 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
   }
 
   void _copyAndFinish() {
+    // في حالة نفاد المخزون لم يُستلم أي كرت: تبقى الدوّارة محفوظة كما هي
+    // (الدرجة 5 والفتح) ليُعاد السحب لاحقاً عندما يتوفر مخزون.
+    if (_wonPrize == null && _noCardsAvailable) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
     if (_wonPrize == null) return;
-    if (_wonPrize!.value.isNotEmpty) {
-      Clipboard.setData(ClipboardData(text: _wonPrize!.value));
+    // ننسخ الكرت الحقيقي المسحوب من المخزون
+    final cardToCopy = _drawnCard ?? _wonPrize!.value;
+    if (cardToCopy.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: cardToCopy));
     }
     setState(() => _copied = true);
 
-    // إعادة تعيين العجلة والعودة
+    // ضمانة إضافية (آمنة حتى لو أُعيدت الضبط سابقاً عند السحب): العجلة تعود
+    // من البداية عند الفوز والنسخ في الدوّارتين الصغيرة والكبيرة.
     final provider = context.read<AppProvider>();
     final category = _selectedTab == 0 ? 'small' : 'large';
     provider.resetSpinWheel(category: category);
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(_wonPrize!.value.isNotEmpty
-            ? '✅ تم نسخ الكرت: ${_wonPrize!.value}'
+        content: Text(cardToCopy.isNotEmpty
+            ? '✅ تم نسخ الكرت: $cardToCopy'
             : '✅ تم استلام الجائزة'),
         backgroundColor: AppTheme.success,
         duration: const Duration(seconds: 2),
@@ -171,7 +291,7 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
     final wheelSize = screenSize.width * 0.72;
     final isSmallScreen = screenSize.width < 360;
     final progress = _spinCounter / _targetCount;
-    final hasResult = _wonPrize != null;
+    final hasResult = _wonPrize != null || _noCardsAvailable;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -240,9 +360,11 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
                 ],
                 Expanded(
                   child: Center(
-                    child: hasResult
+                    child: _wonPrize != null
                         ? _buildResultView(wheelSize, isSmallScreen)
-                        : _buildWheel(wheelSize, isSmallScreen),
+                        : _noCardsAvailable
+                            ? _buildEmptyView(isSmallScreen)
+                            : _buildWheel(wheelSize, isSmallScreen),
                   ),
                 ),
                 if (!hasResult) const SizedBox(height: 8),
@@ -351,8 +473,54 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
     );
   }
 
+  Widget _buildEmptyView(bool isSmallScreen) {
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.inbox_rounded,
+              color: AppTheme.error, size: 80),
+          const SizedBox(height: 16),
+          const Text(
+            'عذراً، نفدت الكروت من المخزون',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'لا توجد كروت متبقية حالياً في المخزون.\nلا تقلق: درجتك محفوظة والدوّارة ستبقى كما هي،\nويمكنك المحاولة من جديد لاحقاً.',
+            style: TextStyle(fontSize: 13),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _copyAndFinish,
+              icon: const Icon(Icons.close_rounded),
+              label: const Text('إغلاق'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.error,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildResultView(double wheelSize, bool isSmallScreen) {
     final prize = _wonPrize!;
+    final displayCard = _drawnCard ?? prize.value;
     return SingleChildScrollView(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -397,24 +565,29 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
                   ),
                   textAlign: TextAlign.center,
                 ),
-                if (prize.value.isNotEmpty) ...[
-                  const SizedBox(height: 8),
+                if (displayCard.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  const Text(
+                    'رمز تسجيل الدخول للكرت:',
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 13),
+                  ),
+                  const SizedBox(height: 6),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                     decoration: BoxDecoration(
                       color: Color(0xFF2A2A3E),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: Color(0xFFFFD700).withValues(alpha: 0.2),
+                        color: Color(0xFFFFD700).withValues(alpha: 0.35),
                       ),
                     ),
                     child: Directionality(
                       textDirection: TextDirection.ltr,
                       child: Text(
-                        prize.value,
+                        displayCard,
                         style: TextStyle(
                           color: Color(0xFF4DB6AC),
-                          fontSize: isSmallScreen ? 16 : 20,
+                          fontSize: isSmallScreen ? 18 : 22,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 1.5,
                         ),
@@ -431,7 +604,7 @@ class _SpinWheelScreenState extends State<SpinWheelScreen>
             child: ElevatedButton.icon(
               onPressed: _copied ? null : _copyAndFinish,
               icon: Icon(_copied ? Icons.check_rounded : Icons.copy_rounded),
-              label: Text(_copied ? 'تم النسخ!' : prize.value.isNotEmpty
+              label: Text(_copied ? 'تم النسخ!' : displayCard.isNotEmpty
                   ? 'نسخ الكرت'
                   : 'تم'),
               style: ElevatedButton.styleFrom(

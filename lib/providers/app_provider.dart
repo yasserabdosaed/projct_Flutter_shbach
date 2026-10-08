@@ -1,19 +1,19 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import '../config/constants.dart';
 import '../models/admin_message.dart';
 import '../models/suggestion.dart';
-import '../models/review.dart';
 import '../models/spin_prize.dart';
+import '../services/balance_notifier.dart';
 import '../services/firebase_service.dart';
+import '../services/device_info_service.dart';
+import '../services/inventory_notifier.dart';
 import '../services/mikrotik_service.dart';
 import '../services/storage_service.dart';
-import '../main.dart';
 
 class AppProvider extends ChangeNotifier {
   final FirebaseService _firebase = FirebaseService();
@@ -30,7 +30,6 @@ class AppProvider extends ChangeNotifier {
 
   List<AdminMessage> _messages = [];
   List<Suggestion> _suggestions = [];
-  List<Review> _reviews = [];
 
   bool _isSuperAdmin = false;
   String? _logoPath;
@@ -38,9 +37,7 @@ class AppProvider extends ChangeNotifier {
   // Balance monitoring
   int _remainingBalance = -1;
   bool _lowBalanceShown = false;
-  DateTime? _lastLowBalanceNotificationTime;
   static const int _lowBalanceThreshold = 100 * 1024 * 1024; // 100 MB
-  static const Duration _notificationCooldown = Duration(hours: 2);
 
   Timer? _monitorTimer;
   double _currentSpeed = 0;
@@ -64,7 +61,6 @@ class AppProvider extends ChangeNotifier {
   String get restUrl => _restUrl;
   List<AdminMessage> get messages => _messages;
   List<Suggestion> get suggestions => _suggestions;
-  List<Review> get reviews => _reviews;
   int get unreadCount => _messages.where((m) => !m.read).length;
   bool get isSuperAdmin => _isSuperAdmin;
   void setSuperAdmin(bool v) { _isSuperAdmin = v; notifyListeners(); }
@@ -76,6 +72,15 @@ class AppProvider extends ChangeNotifier {
   int get pingMs => _pingMs;
   bool get isMonitoring => _monitorTimer != null;
   int get remainingMB => _remainingBalance > 0 ? _remainingBalance ~/ (1024 * 1024) : 0;
+
+  /// يُحدَّث الرصيد المتبقي (بالبايت) من شاشة تسجيل الدخول بناءً على
+  /// القيمة المعروضة في الصفحة الفعلية (#remain_bytes_total)
+  void setRemainingBalanceFromBytes(int bytes) {
+    if (bytes <= 0) return;
+    _remainingBalance = bytes;
+    _storage.saveRemainingBytes(bytes);
+    notifyListeners();
+  }
 
   // Spin Wheel getters (دوّارتان)
   int get spinSmallCounter => _spinSmallCounter;
@@ -97,6 +102,8 @@ class AppProvider extends ChangeNotifier {
   String get whatsappGroup => _storage.whatsappGroup;
   String? get logoPath => _logoPath;
   String? get gatewayIp => _mikrotik.gatewayIp;
+  // معرّف الجهاز الدائم = معرّف المستخدم (كل جهاز = مستخدم = عجلة خاصة)
+  String get deviceId => _storage.deviceId;
 
   // ===== دوال عجلة الحظ =====
   Future<void> loadSpinData() async {
@@ -108,13 +115,13 @@ class AppProvider extends ChangeNotifier {
     _spinPrizes = await _storage.getSpinPrizes();
     notifyListeners();
 
-    // مزامنة من Firebase (كل مستخدم له عداده الخاص)
-    if (_voucher != null && _voucher!.isNotEmpty) {
-      await _loadSpinDataFromFirebase(_voucher!);
+    // مزامنة من Firebase (كل جهاز=مستخدم له عداده الخاص، مرتبط بمعرّف الجهاز الدائم)
+    final deviceId = _storage.deviceId;
+    if (deviceId != 'unknown-device') {
+      await _loadSpinDataFromFirebase(deviceId);
       // بعد المزج، نرفع البيانات المحلية إلى Firebase
-      // (لضمان أن النقاط من المهمة الخلفية لا تضيع)
       if (_firebaseReady) {
-        await _syncSpinDataToFirebase(_voucher!);
+        await _syncSpinDataToFirebase(deviceId);
       }
     }
   }
@@ -132,28 +139,70 @@ class AppProvider extends ChangeNotifier {
     return await _storage.isVoucherProcessed(voucher);
   }
 
-  Future<void> handleSpinWheel(String voucher, {String? category}) async {
-    if (_processingVouchers.contains(voucher)) return;
-
-    // فحص محلي أولاً
-    if (await _storage.isVoucherProcessed(voucher)) return;
-
-    // فحص Firebase أيضاً (لمنع التلاعب حتى لو أعاد التثبيت)
-    if (_firebaseReady) {
-      try {
-        final remote = await _firebase.getUserSpinData(voucher);
-        if (remote != null) {
-          final processed = (remote['processedVouchers'] as List<dynamic>?)
-              ?.map((e) => e.toString()).toSet() ?? {};
-          if (processed.contains(voucher)) return;
-        }
-      } catch (_) {}
+  Future<String?> handleSpinWheel(String voucher, {String? category}) async {
+    // القفل الحصري فوراً (قبل أي await) لمنع المسارات المتوازية
+    // (الشاشة + دورة المراقبة + الخلفية) من احتساب نفس الكرت مرتين.
+    if (_processingVouchers.contains(voucher)) {
+      debugPrint('[SPIN][DEBUG] handleSpinWheel called but already processing: $voucher');
+      return null;
     }
-
     _processingVouchers.add(voucher);
 
     try {
       final cat = category ?? _spinCategory;
+
+      // الكرت صغير جداً (300 ميجا أو أقل): لا يُحتسب أي نقطة في عجلة الحظ
+      // ولا يُسجَّل كبطاقة محتسبة — فقط تظهر رسالة للمستخدم.
+      if (cat == 'none') {
+        debugPrint('[SPIN][DEBUG] card too small for spin wheel: $voucher');
+        // نُعلّم الكرت محلياً كأنه معالج حتى لا يعيده نظام المراقبة فحصه كل دورة،
+        // لكن لا يُسجَّل في السحابة ولا تُحتسب له أي نقطة.
+        await _storage.saveProcessedVoucher(voucher);
+        notifyListeners();
+        return 'none';
+      }
+
+      // الفئة غير معروفة (فشل قراءة الحجم): لا نحتسب أي شيء حتى نتحقق منها
+      if (cat != 'small' && cat != 'large') {
+        debugPrint('[SPIN][DEBUG] unknown category, skipped to avoid wrong count: $voucher cat=$cat');
+        return null;
+      }
+
+      // الحماية محلية على الجهاز: الكرت يُخزَّن على الجهاز نفسه فور احتسابه،
+      // بحيث لو سجّل المستخدم خروجاً ثم أدخل نفس الكرت مجدداً لا تُحتسب له
+      // نقطة أخرى. هذا يجعل الكرت الجديد يُحتسب فوراً (بدون انتظار أو أخطاء).
+      final already = await _storage.isVoucherProcessed(voucher);
+      if (already) {
+        debugPrint('[SPIN][DEBUG] blocked: card already processed locally: $voucher');
+        return null;
+      }
+
+      // الحماية العالمية عبر السحابة: منع تكرار نفس الكرت على أي جهاز آخر.
+      // spin_claims هو السجل المرجعي (global) — المعاملة الذرية تضمن أن
+      // أول جهاز يحتسب الكرت هو الوحيد. إن كان Firebase متاحاً والكرت
+      // محتسباً مسبقاً من جهاز آخر → لا نقطة.
+      if (_firebaseReady) {
+        try {
+          final claim = await _firebase.claimVoucherOnce(voucher);
+          if (claim == 'already') {
+            debugPrint('[SPIN][DEBUG] blocked: card already claimed on another device: $voucher');
+            return null;
+          }
+          if (claim == null) {
+            debugPrint('[SPIN][DEBUG] cloud claim unavailable - falling back to local-only: $voucher');
+          }
+        } catch (e) {
+          debugPrint('[SPIN][DEBUG] cloud claim error (ignored), local-only: $e');
+        }
+      }
+
+      // فحص نهائي قبل الاحتساب: قد يكون كرتاً احتسبه مسار آخر أثناء انتظاراتنا
+      if (await _storage.isVoucherProcessed(voucher)) {
+        debugPrint('[SPIN][DEBUG] blocked: card processed during await: $voucher');
+        return null;
+      }
+
+      debugPrint('[SPIN][DEBUG] handleSpinWheel received card: $voucher category: $cat');
 
       if (cat == 'small') {
         _spinCategory = 'small';
@@ -183,24 +232,34 @@ class AppProvider extends ChangeNotifier {
         }
       }
 
+      // حفظ الكرت على الجهاز لمنع تكرار نقطته
       await _storage.saveProcessedVoucher(voucher);
 
-      if (_firebaseReady) {
-        await _syncSpinDataToFirebase(voucher);
-      }
+      debugPrint('[SPIN][DEBUG] card counted. small=$_spinSmallCounter large=$_spinLargeCounter');
 
+      // إعلام الواجهة فوراً حتى لا يتأخر تحديث العداد مهما حدث
       notifyListeners();
+
+      // مزامنة اختيارية مع Firebase (لا تمنع الكرت الجديد أبداً)
+      if (_firebaseReady) {
+        try {
+          await _syncSpinDataToFirebase(_storage.deviceId);
+        } catch (e) {
+          debugPrint('[SPIN][DEBUG] firebase sync failed (ignored): $e');
+        }
+      }
+      return 'counted';
     } finally {
       _processingVouchers.remove(voucher);
     }
   }
 
-  Future<void> _syncSpinDataToFirebase(String voucher) async {
+  Future<void> _syncSpinDataToFirebase(String key) async {
     if (!_firebaseReady) return;
     final smallVouchers = await _storage.getSmallVouchers();
     final largeVouchers = await _storage.getLargeVouchers();
     final processed = await _storage.getProcessedVouchers();
-    await _firebase.saveUserSpinData(voucher, {
+    await _firebase.saveUserSpinData(key, {
       'smallCounter': _spinSmallCounter,
       'largeCounter': _spinLargeCounter,
       'smallAvailable': _spinSmallAvailable,
@@ -211,9 +270,9 @@ class AppProvider extends ChangeNotifier {
     });
   }
 
-  Future<void> _loadSpinDataFromFirebase(String voucher) async {
+  Future<void> _loadSpinDataFromFirebase(String key) async {
     if (!_firebaseReady) return;
-    final remote = await _firebase.getUserSpinData(voucher);
+    final remote = await _firebase.getUserSpinData(key);
     if (remote == null) return;
 
     final remoteSmall = remote['smallCounter'] as int? ?? 0;
@@ -224,8 +283,6 @@ class AppProvider extends ChangeNotifier {
             ?.map((e) => e.toString()).toList() ?? [];
     final remoteLargeVouchers = (remote['largeVouchers'] as List<dynamic>?)
             ?.map((e) => e.toString()).toList() ?? [];
-    final remoteProcessed = (remote['processedVouchers'] as List<dynamic>?)
-            ?.map((e) => e.toString()).toSet() ?? {};
 
     // نأخذ القيمة الأعلى (إذا المستخدم استخدم نفس الكرت على جهاز آخر)
     bool changed = false;
@@ -256,9 +313,6 @@ class AppProvider extends ChangeNotifier {
     for (final v in remoteLargeVouchers) {
       await _storage.addLargeVoucher(v);
     }
-    for (final v in remoteProcessed) {
-      await _storage.saveProcessedVoucher(v);
-    }
 
     if (changed) notifyListeners();
   }
@@ -286,8 +340,8 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
 
     // مزامنة Firebase
-    if (_firebaseReady && _voucher != null) {
-      await _syncSpinDataToFirebase(_voucher!);
+    if (_firebaseReady) {
+      await _syncSpinDataToFirebase(_storage.deviceId);
     }
   }
 
@@ -333,6 +387,78 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ===== سحب كرت حقيقي من مخزون صنف (ذري في Firebase) =====
+  // يُستدعى عند فوز المستخدم. يسحب كرتاً عشوائياً ويحذفه من المخزون.
+  // يرجع رقم الكرت، أو null إذا المخزون فارغ.
+  Future<String?> drawPrizeCard(String prizeId) async {
+    String? card;
+    if (_firebaseReady) {
+      card = await _firebase.drawCard(prizeId);
+    } else {
+      // بدون Firebase نرجع null (لا يمكن السحب بأمان)
+      return null;
+    }
+    if (card != null) {
+      // تحديث المخزون محلياً بعد السحب
+      final idx = _spinPrizes.indexWhere((p) => p.id == prizeId);
+      if (idx != -1) {
+        final updatedCards = List<String>.from(_spinPrizes[idx].cards)
+          ..remove(card);
+        _spinPrizes[idx] =
+            _spinPrizes[idx].copyWith(cards: updatedCards);
+        await _storage.saveSpinPrizes(_spinPrizes);
+        _checkLowCardsNotification(_spinPrizes[idx]);
+        notifyListeners();
+      }
+    }
+    return card;
+  }
+
+  Future<void> _checkLowCardsNotification(SpinPrize prize) async {
+    // عندما ينخفض المخزون إلى أقل من 5، أُرسل إشعاراً للأدمن/السوبر إدمن.
+    // نرسل مرة واحدة فقط عند كل مستوى (مثلاً عند 4، ثم عند 3، ...) لتجنّب
+    // إغراق الإشعارات في كل عملية سحب.
+    final remaining = prize.cardCount;
+    if (remaining >= 5) return;
+    final lastNotified = _storage.getLastLowCardsNotified(prize.id);
+    if (lastNotified != null && lastNotified == remaining) return;
+
+    if (_firebaseReady) {
+      await _firebase.sendLowCardsNotification(
+          prize.name, prize.type, remaining);
+      await _storage.setLastLowCardsNotified(prize.id, remaining);
+    }
+  }
+
+  // ===== إضافة مخزون الكروت لصنف (من لوحة الإدمن) =====
+  Future<void> addPrizeCards(String prizeId, List<String> cards) async {
+    final idx = _spinPrizes.indexWhere((p) => p.id == prizeId);
+    if (idx == -1) return;
+    final current = List<String>.from(_spinPrizes[idx].cards);
+    for (final c in cards) {
+      if (!current.contains(c)) current.add(c);
+    }
+    _spinPrizes[idx] = _spinPrizes[idx].copyWith(cards: current);
+    await _storage.saveSpinPrizes(_spinPrizes);
+    if (_firebaseReady) {
+      await _firebase.replacePrizeCards(prizeId, current);
+    }
+    notifyListeners();
+  }
+
+  // ===== تحديث المخزون بعد التعديل من لوحة الإدمن =====
+  Future<void> replaceAllPrizeCards(
+      String prizeId, List<String> cards) async {
+    final idx = _spinPrizes.indexWhere((p) => p.id == prizeId);
+    if (idx == -1) return;
+    _spinPrizes[idx] = _spinPrizes[idx].copyWith(cards: cards);
+    await _storage.saveSpinPrizes(_spinPrizes);
+    if (_firebaseReady) {
+      await _firebase.replacePrizeCards(prizeId, cards);
+    }
+    notifyListeners();
+  }
+
   // ===== دوال مساعدة للكروت =====
   Future<List<String>> getSmallVouchers() async {
     return await _storage.getSmallVouchers();
@@ -369,8 +495,8 @@ class AppProvider extends ChangeNotifier {
     }
     notifyListeners();
 
-    if (_firebaseReady && _voucher != null) {
-      await _syncSpinDataToFirebase(_voucher!);
+    if (_firebaseReady) {
+      await _syncSpinDataToFirebase(_storage.deviceId);
     }
   }
 
@@ -379,6 +505,56 @@ class AppProvider extends ChangeNotifier {
     if (!_firebaseReady) return;
     await _firebase.updateAdminMessage(docId, title, body);
   }
+
+  // ===== حذف رسالة من رسائل الإدارة =====
+  Future<void> deleteAdminMessage(String docId) async {
+    if (!_firebaseReady || docId.isEmpty) return;
+    try {
+      await _firebase.deleteAdminMessage(docId);
+      _messages.removeWhere((m) => m.id == docId);
+      _storage.removeReadMessageId(docId);
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  // ===== حذف اقتراح =====
+  Future<void> deleteSuggestion(String docId) async {
+    if (!_firebaseReady || docId.isEmpty) return;
+    try {
+      await _firebase.deleteSuggestion(docId);
+      _suggestions.removeWhere((s) => s.id == docId);
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  // ===== رد على اقتراح (user أو admin) كأنها محادثة خاصة =====
+  Future<void> replyToSuggestion(String docId, String text, String sender) async {
+    if (!_firebaseReady || docId.isEmpty || text.trim().isEmpty) return;
+    try {
+      await _firebase.replyToSuggestion(docId, text, sender);
+      // تحديث محلي فوري دون انتظار البث
+      final idx = _suggestions.indexWhere((s) => s.id == docId);
+      if (idx >= 0) {
+        final s = _suggestions[idx];
+        _suggestions[idx] = s.copyWith(
+          replies: [
+            ...s.replies,
+            SuggestionReply(
+              sender: sender,
+              text: text.trim(),
+              createdAt: DateTime.now(),
+            ),
+          ],
+        );
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  // اقتراحات المستخدم الحالي (كل مستخدم يرى دردشته الخاصة فقط)
+  List<Suggestion> mySuggestions(String username) => _suggestions
+      .where((s) => s.userName == username)
+      .toList(growable: false);
 
   // ===== باقي الدوال =====
   Future<void> init() async {
@@ -391,16 +567,23 @@ class AppProvider extends ChangeNotifier {
     _logoPath = _storage.logoPath;
     _localReady = true;
 
+    await _storage.weeklyCleanupIfDue();
     await loadSpinData();
+    _remainingBalance = _storage.remainingBytes;
     notifyListeners();
 
     _firebase.init().then((_) {
       _firebaseReady = _firebase.isAvailable;
       if (_firebaseReady) {
+        _listenToAppSettings();
         _listenToMessages();
         _listenToSuggestions();
-        _listenToReviews();
         _listenToSpinPrizes();
+        // قراءة فورية (مرة واحدة) لأحدث الإعدادات من السحاب لضمان وصول التغييرات
+        // حتى قبل أن يبثّ stream التحديثات، وعند كل فتح للتطبيق.
+        _firebase.getAppSettings().then((settings) {
+          if (settings.isNotEmpty) _applyAppSettings(settings);
+        }).catchError((_) {});
         if (_firebase.fcmToken != null) {
           _storage.saveFcmToken(_firebase.fcmToken!);
           if (_voucher != null) {
@@ -417,10 +600,14 @@ class AppProvider extends ChangeNotifier {
 
   void _listenToMessages() {
     _firebase.getMessagesStream().listen((msgs) {
+      final persistedRead = _storage.getReadMessageIds();
       final oldMessages = Map.fromEntries(_messages.map((m) => MapEntry(m.id, m.read)));
       _messages = msgs.map((msg) {
-        if (oldMessages.containsKey(msg.id)) {
-          return msg.copyWith(read: oldMessages[msg.id]);
+        // تُعتبر الرسالة مقروءة إذا كانت مقروءة مسبقاً في هذه الجلسة
+        // أو كانت في قائمة القراءة المحفوظة (تبقى مقروءة بعد إعادة الفتح)
+        final read = oldMessages[msg.id] ?? persistedRead.contains(msg.id);
+        if (read) {
+          return msg.copyWith(read: true);
         }
         return msg;
       }).toList();
@@ -435,19 +622,83 @@ class AppProvider extends ChangeNotifier {
     });
   }
 
-  void _listenToReviews() {
-    _firebase.getReviewsStream().listen((revs) {
-      _reviews = revs;
-      notifyListeners();
-    });
-  }
-
   void _listenToSpinPrizes() {
     _firebase.getSpinPrizesStream().listen((prizes) {
       _spinPrizes = prizes;
       _storage.saveSpinPrizes(_spinPrizes);
+      // إشعار عند توفر كروت جديدة بعد أن كانت فارغة — فقط لمن عنده
+      // دوّارة محفوظة وجاهزة (بلغ 5 نقاط ولم يدوّر بعد).
+      final wheelWaiting = _spinSmallAvailable || _spinLargeAvailable;
+      InventoryNotifier.checkAndNotify(
+        prizes: prizes,
+        onlyIfAvailableWheel: wheelWaiting,
+      );
       notifyListeners();
     });
+  }
+
+  // ===== الإعدادات المشتركة (تتحدث لكل المستخدمين عند تغيير الأدمن) =====
+  void _listenToAppSettings() {
+    _firebase.getAppSettingsStream().listen((settings) {
+      _applyAppSettings(settings);
+    });
+  }
+
+  void _applyAppSettings(Map<String, dynamic> settings) {
+    var changed = false;
+
+    final login = settings['loginUrl'];
+    if (login is String && login.isNotEmpty && login != _loginUrl) {
+      _loginUrl = login;
+      _storage.saveLoginUrl(login);
+      changed = true;
+    }
+    final live = settings['liveUrl'];
+    if (live is String && live.isNotEmpty && live != _liveUrl) {
+      _liveUrl = live;
+      _storage.saveLiveUrl(live);
+      changed = true;
+    }
+    final rest = settings['restUrl'];
+    if (rest is String && rest.isNotEmpty && rest != _restUrl) {
+      _restUrl = rest;
+      _storage.saveRestUrl(rest);
+      changed = true;
+    }
+    final wa = settings['whatsapp'];
+    if (wa is String && wa.isNotEmpty && wa != _storage.whatsapp) {
+      _storage.saveWhatsapp(wa);
+      changed = true;
+    }
+    final ph = settings['phone'];
+    if (ph is String && ph.isNotEmpty && ph != _storage.phone) {
+      _storage.savePhone(ph);
+      changed = true;
+    }
+    final wg = settings['whatsappGroup'];
+    if (wg is String && wg.isNotEmpty && wg != _storage.whatsappGroup) {
+      _storage.saveWhatsappGroup(wg);
+      changed = true;
+    }
+    final tg = settings['telegram'];
+    if (tg is String && tg.isNotEmpty && tg != _storage.telegram) {
+      _storage.saveTelegram(tg);
+      changed = true;
+    }
+
+    // كلمات المرور - تُخزَّن محلياً لمنع الالتباس (1234 / yasser)
+    final ap = settings['adminPassword'];
+    if (ap is String && ap.isNotEmpty) {
+      _storage.saveAdminPassword(ap);
+      changed = true;
+    }
+    final sap = settings['superAdminPassword'];
+    if (sap is String && sap.isNotEmpty) {
+      _storage.saveSuperAdminPassword(sap);
+      changed = true;
+    }
+
+    if (changed) notifyListeners();
   }
 
   Future<void> _runMonitorCycle() async {
@@ -458,15 +709,6 @@ class AppProvider extends ChangeNotifier {
   }
 
   /// تحديد فئة الكرت بناءً على حقل السرعة من الميكروتيك
-  String _speedToCategory(String speed) {
-    if (speed.contains('economic') || speed.contains('normal')) {
-      return 'small';
-    } else if (speed.contains('middle') || speed.contains('high') || speed.contains('very')) {
-      return 'large';
-    }
-    return 'small';
-  }
-
   Future<void> _runMonitorCycleInner() async {
     // فحص حالة تسجيل الدخول من الميكروتيك (يعمل حتى لو _isConnected = false)
     try {
@@ -476,7 +718,15 @@ class AppProvider extends ChangeNotifier {
         final alreadyProcessed = await _storage.isVoucherProcessed(username);
         if (!alreadyProcessed) {
           // كرت جديد (تسجيل دخول من متصفح أو التطبيق)
-          final category = _speedToCategory(speed);
+          // التحديد الدقيق: 300 ميجا='none'، 600/1ج='small'، 1.5ج فأكثر='large'
+          // إن تعذّر التحديد (null) نُؤجل ولا نحتسب — يُعاد الفحص في الدورة التالية
+          final category =
+              await _mikrotik.determineVoucherCategory(fallbackSpeed: speed);
+          if (category == null) {
+            debugPrint('[SPIN][DEBUG] monitor: category undetermined for $username, deferring');
+            this.notifyListeners();
+            return;
+          }
           await _storage.saveSession(username, _mikrotik.gatewayIp ?? '192.168.88.1');
           if (_firebaseReady && _firebase.fcmToken != null) {
             await _firebase.saveUserToken(username);
@@ -496,6 +746,7 @@ class AppProvider extends ChangeNotifier {
         _remainingBalance = -1;
         _lowBalanceShown = false;
         await _storage.clearSession();
+        await _storage.clearRemainingBytes();
         notifyListeners();
       }
     } catch (_) {
@@ -503,13 +754,24 @@ class AppProvider extends ChangeNotifier {
     }
 
     if (_isConnected) {
-      _remainingBalance = await _mikrotik.getRemainingBytes();
+      // لا تكسر قيمة رصيد معروفة جيدة بقيمة -1 عند فشل التحليل المؤقت
+      final bal = await _mikrotik.getRemainingBytes();
+      if (bal >= 0) {
+        _remainingBalance = bal;
+        await _storage.saveRemainingBytes(bal);
+      }
       if (_remainingBalance > 0 && _remainingBalance < _lowBalanceThreshold) {
-        final remainingMB = _remainingBalance ~/ (1024 * 1024);
         _lowBalanceShown = false;
-        await _sendLowBalanceNotification(remainingMB);
       } else {
         _lowBalanceShown = false;
+      }
+      // إشعارات انخفاض الرصيد حسب العتبات (100/70/50/30/5 ميجا)،
+      // كل عتبة تُرسل مرة واحدة لكل كرت (محفوظة محلياً لكل كرت)
+      if (_remainingBalance > 0 && _voucher != null) {
+        await BalanceNotifier.checkAndNotify(
+          voucher: _voucher!,
+          remainingBytes: _remainingBalance,
+        );
       }
     }
     _currentSpeed = await _mikrotik.measureSpeed();
@@ -526,33 +788,6 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ===== إرسال إشعار انخفاض الرصيد (تم تصحيح الاستدعاء) =====
-  Future<void> _sendLowBalanceNotification(int remainingMB) async {
-    if (_lastLowBalanceNotificationTime != null) {
-      final diff = DateTime.now().difference(_lastLowBalanceNotificationTime!);
-      if (diff < _notificationCooldown) return;
-    }
-
-    const androidDetails = AndroidNotificationDetails(
-      'low_balance_channel',
-      'تنبيهات الرصيد',
-      channelDescription: 'إشعارات عند انخفاض رصيد الإنترنت',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-    );
-    const iosDetails = DarwinNotificationDetails();
-    const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
-
-    await flutterLocalNotificationsPlugin.show(
-      id: 0,
-      title: '⚠️ رصيد منخفض',
-      body: 'الرصيد المتبقي: $remainingMB ميجابايت. يرجى تجديد الاشتراك.',
-      notificationDetails: details,
-    );
-    _lastLowBalanceNotificationTime = DateTime.now();
-  }
-
   Future<String> login(String voucher, {String? category}) async {
     final result = await _mikrotik.login(voucher);
     if (result.success) {
@@ -560,7 +795,9 @@ class AppProvider extends ChangeNotifier {
       _isConnected = true;
       await _storage.saveSession(voucher, _mikrotik.gatewayIp ?? '192.168.88.1');
       if (_firebaseReady && _firebase.fcmToken != null) {
-        await _firebase.saveUserToken(voucher);
+        final mac = await _mikrotik.getClientMac();
+        final deviceName = await DeviceInfoService.instance.getDeviceName();
+        await _firebase.saveUserToken(voucher, mac, deviceName);
       }
       // تُحتسب النقطة مرة واحدة فقط لكل كرت (حتى لو دُعي login() مراراً)
       await handleSpinWheel(voucher, category: category);
@@ -574,6 +811,7 @@ class AppProvider extends ChangeNotifier {
   Future<void> logout() async {
     await _mikrotik.logout();
     await _storage.clearSession();
+    await _storage.clearRemainingBytes();
     _voucher = null;
     _isConnected = false;
     _remainingBalance = -1;
@@ -581,15 +819,9 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addSuggestion(String title, String body) async {
+  Future<void> addSuggestion(String title, String body, String userName) async {
     if (_firebaseReady) {
-      await _firebase.addSuggestion(title, body);
-    }
-  }
-
-  Future<void> addReview(String userName, String comment, double rating) async {
-    if (_firebaseReady) {
-      await _firebase.addReview(userName, comment, rating);
+      await _firebase.addSuggestion(title, body, userName);
     }
   }
 
@@ -601,18 +833,21 @@ class AppProvider extends ChangeNotifier {
   Future<void> updateLoginUrl(String url) async {
     _loginUrl = url;
     await _storage.saveLoginUrl(url);
+    await _firebase.saveAppSetting('loginUrl', url);
     notifyListeners();
   }
 
   Future<void> updateLiveUrl(String url) async {
     _liveUrl = url;
     await _storage.saveLiveUrl(url);
+    await _firebase.saveAppSetting('liveUrl', url);
     notifyListeners();
   }
 
   Future<void> updateRestUrl(String url) async {
     _restUrl = url;
     await _storage.saveRestUrl(url);
+    await _firebase.saveAppSetting('restUrl', url);
     notifyListeners();
   }
 
@@ -620,13 +855,17 @@ class AppProvider extends ChangeNotifier {
     final idx = _messages.indexWhere((m) => m.id == id);
     if (idx != -1 && !_messages[idx].read) {
       _messages[idx] = _messages[idx].copyWith(read: true);
+      _storage.addReadMessageId(id);
       notifyListeners();
     }
   }
 
   Future<bool> verifyAdminPassword(String password) async {
-    if (!_firebaseReady) return password == AppConstants.adminSecretKey;
-    return await _firebase.verifyAdminPassword(password);
+    final ok = _firebaseReady
+        ? await _firebase.verifyAdminPassword(password)
+        : password == AppConstants.adminSecretKey;
+    if (ok) await subscribeAdminToTopic();
+    return ok;
   }
 
   Future<bool> updateAdminPassword(String current, String newPassword) async {
@@ -647,8 +886,18 @@ class AppProvider extends ChangeNotifier {
   Future<int> getTotalUserCount() => _firebase.getTotalUserCount();
 
   Future<bool> verifySuperAdminPassword(String password) async {
-    if (!_firebaseReady) return password == AppConstants.superAdminSecretKey;
-    return await _firebase.verifySuperAdminPassword(password);
+    final ok = _firebaseReady
+        ? await _firebase.verifySuperAdminPassword(password)
+        : password == AppConstants.superAdminSecretKey;
+    if (ok) await subscribeAdminToTopic();
+    return ok;
+  }
+
+  // ===== اشتراك جهاز الإدمن/السوبر في موضوع «الأدمن» لاستقبال إشعار النقص =====
+  Future<void> subscribeAdminToTopic() async {
+    if (_firebaseReady) {
+      await _firebase.subscribeToAdminTopic();
+    }
   }
 
   Future<bool> updateSuperAdminPassword(String current, String newPassword) async {
@@ -684,21 +933,25 @@ class AppProvider extends ChangeNotifier {
 
   Future<void> saveWhatsapp(String v) async {
     await _storage.saveWhatsapp(v);
+    await _firebase.saveAppSetting('whatsapp', v);
     notifyListeners();
   }
 
   Future<void> saveTelegram(String v) async {
     await _storage.saveTelegram(v);
+    await _firebase.saveAppSetting('telegram', v);
     notifyListeners();
   }
 
   Future<void> savePhone(String v) async {
     await _storage.savePhone(v);
+    await _firebase.saveAppSetting('phone', v);
     notifyListeners();
   }
 
   Future<void> saveWhatsappGroup(String v) async {
     await _storage.saveWhatsappGroup(v);
+    await _firebase.saveAppSetting('whatsappGroup', v);
     notifyListeners();
   }
 

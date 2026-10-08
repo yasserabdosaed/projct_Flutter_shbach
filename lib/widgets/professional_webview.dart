@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -9,6 +11,7 @@ class ProfessionalWebView extends StatefulWidget {
   final String loadingText;
   final Color accentColor;
   final bool injectMobileViewport;
+  final String? demoAsset;
 
   const ProfessionalWebView({
     super.key,
@@ -17,6 +20,7 @@ class ProfessionalWebView extends StatefulWidget {
     this.loadingText = 'جاري التحميل...',
     this.accentColor = AppTheme.accent,
     this.injectMobileViewport = true,
+    this.demoAsset,
   });
 
   @override
@@ -28,16 +32,21 @@ class _ProfessionalWebViewState extends State<ProfessionalWebView>
   late WebViewController _controller;
   bool _isLoading = true;
   bool _isFullscreen = false;
+  bool _isDemoMode = false;
+  bool _mainFrameFailed = false;
+  Timer? _loadTimeout;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initWebView();
+    _initialFlow();
   }
 
   @override
   void dispose() {
+    _loadTimeout?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _exitFullscreen();
     super.dispose();
@@ -45,10 +54,63 @@ class _ProfessionalWebViewState extends State<ProfessionalWebView>
 
   @override
   void didChangeMetrics() {
-    // عند تغيير الاتجاه، نضبط الفيديو مرة أخرى
     if (_isFullscreen) {
       _adjustVideoForFullscreen();
     }
+  }
+
+  Future<void> _initialFlow() async {
+    final reachable = await _isNetworkReachable(widget.url);
+    if (!mounted) return;
+    if (reachable) {
+      _loadRealUrl();
+    } else {
+      _showDemoMode();
+    }
+  }
+
+  Future<bool> _isNetworkReachable(String urlString) async {
+    try {
+      final uri = Uri.tryParse(urlString);
+      if (uri == null || uri.host.isEmpty) return false;
+      final socket = await Socket.connect(
+        uri.host,
+        uri.port,
+        timeout: const Duration(seconds: 3),
+      );
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _loadRealUrl() {
+    if (!mounted) return;
+    _isDemoMode = false;
+    _mainFrameFailed = false;
+    setState(() => _isLoading = true);
+    _loadTimeout?.cancel();
+    _controller.loadRequest(Uri.parse(widget.url));
+    _startLoadTimeout();
+  }
+
+  void _showDemoMode() {
+    if (!mounted || widget.demoAsset == null) return;
+    _isDemoMode = true;
+    _loadTimeout?.cancel();
+    setState(() => _isLoading = true);
+    _controller.loadFlutterAsset(widget.demoAsset!);
+  }
+
+  void _startLoadTimeout() {
+    _loadTimeout?.cancel();
+    _loadTimeout = Timer(const Duration(seconds: 12), () {
+      if (mounted && _isLoading) {
+        _mainFrameFailed = true;
+        setState(() => _isLoading = false);
+      }
+    });
   }
 
   void _initWebView() {
@@ -58,110 +120,76 @@ class _ProfessionalWebViewState extends State<ProfessionalWebView>
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
-            if (mounted) setState(() => _isLoading = true);
+            _mainFrameFailed = false;
+            if (mounted) {
+              setState(() => _isLoading = true);
+            }
+            _startLoadTimeout();
           },
           onPageFinished: (_) async {
-            if (mounted) setState(() => _isLoading = false);
-            if (widget.injectMobileViewport) {
+            _loadTimeout?.cancel();
+            if (mounted) {
+              setState(() => _isLoading = false);
+            }
+            if (_mainFrameFailed) return;
+            if (!_isDemoMode && widget.injectMobileViewport) {
               await _injectMobileViewport();
             }
-            // إذا كان في وضع التكبير، نضبط الفيديو
             if (_isFullscreen) {
               await _adjustVideoForFullscreen();
             }
           },
+          onWebResourceError: (error) {
+            if (error.isForMainFrame != true) return;
+            _mainFrameFailed = true;
+            _loadTimeout?.cancel();
+            if (mounted) {
+              setState(() => _isLoading = false);
+            }
+          },
         ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
+      );
   }
 
-  // ===== حقن الكود لتوسيط الفيديو =====
   Future<void> _injectMobileViewport() async {
     try {
       await _controller.runJavaScript('''
 (function(){
 try{
-  // ضبط الـ Viewport
   var m=document.querySelector('meta[name="viewport"]');
   if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}
   m.content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes, viewport-fit=cover';
-  
-  // ضبط الهوامش
+  document.documentElement.style.overflow='auto';
+  document.documentElement.style.height='auto';
+  document.body.style.overflow='auto';
+  document.body.style.height='auto';
   document.body.style.margin='0';
   document.body.style.padding='0';
   document.documentElement.style.margin='0';
   document.documentElement.style.padding='0';
-  document.body.style.height='100%';
-  document.documentElement.style.height='100%';
-  document.body.style.width='100%';
-  document.documentElement.style.width='100%';
-  document.body.style.overflow='hidden';
-  document.documentElement.style.overflow='hidden';
-  
-  // جعل جميع العناصر تملأ الشاشة
-  var allElements = document.querySelectorAll('*');
-  allElements.forEach(function(el){
-    if(el.style){
+  ['img','table','video','iframe','embed'].forEach(function(tag){
+    document.querySelectorAll(tag).forEach(function(el){
       el.style.maxWidth='100%';
-      el.style.maxHeight='100%';
       el.style.boxSizing='border-box';
-    }
+    });
   });
-  
-  // توسيط المحتوى في منتصف الشاشة
-  document.body.style.display='flex';
-  document.body.style.alignItems='center';
-  document.body.style.justifyContent='center';
-  document.body.style.flexDirection='column';
-  
-  // البحث عن عناصر الفيديو ومشغلات الفيديو
-  var videoElements = document.querySelectorAll('video, .video-js, .vjs-tech, iframe, .vjs_video_3-dimensions, .vjs-fluid, .jw-video, .jwplayer, .plyr__video-wrapper');
-  videoElements.forEach(function(el){
-    el.style.width='100%';
-    el.style.height='100%';
+  document.querySelectorAll('video, .video-js, .vjs-tech, iframe, .vjs-fluid, .jw-video, .jwplayer, .plyr__video-wrapper').forEach(function(el){
     el.style.maxWidth='100%';
-    el.style.maxHeight='100%';
     el.style.objectFit='contain';
     el.style.display='block';
     el.style.margin='0 auto';
-    // إذا كان العنصر داخل حاوية، نجعل الحاوية أيضاً تملأ الشاشة
-    var parent = el.parentElement;
-    if(parent){
-      parent.style.width='100%';
-      parent.style.height='100%';
-      parent.style.maxWidth='100%';
-      parent.style.maxHeight='100%';
-      parent.style.display='flex';
-      parent.style.alignItems='center';
-      parent.style.justifyContent='center';
-    }
   });
-  
-  // البحث عن أي عنصر يحتوي على فيديو (مثل div مع class video-container)
-  var containers = document.querySelectorAll('.video-container, .player-container, .video-wrapper, .vjs-video');
-  containers.forEach(function(el){
-    el.style.width='100%';
-    el.style.height='100%';
-    el.style.maxWidth='100%';
-    el.style.maxHeight='100%';
-    el.style.display='flex';
-    el.style.alignItems='center';
-    el.style.justifyContent='center';
-  });
-  
 }catch(e){}
 })();
 ''');
     } catch (_) {}
   }
 
-  // ===== ضبط الفيديو عند التكبير =====
   Future<void> _adjustVideoForFullscreen() async {
     try {
       await _controller.runJavaScript('''
 (function(){
 try{
-  // إزالة جميع الهوامش
   document.body.style.margin='0';
   document.body.style.padding='0';
   document.documentElement.style.margin='0';
@@ -177,14 +205,10 @@ try{
   document.body.style.left='0';
   document.body.style.bottom='0';
   document.body.style.right='0';
-  
-  // توسيط المحتوى
   document.body.style.display='flex';
   document.body.style.alignItems='center';
   document.body.style.justifyContent='center';
   document.body.style.flexDirection='column';
-  
-  // جعل جميع العناصر تملأ الشاشة
   var allElements = document.querySelectorAll('*');
   allElements.forEach(function(el){
     if(el.style){
@@ -192,8 +216,6 @@ try{
       el.style.maxHeight='100%';
     }
   });
-  
-  // البحث عن الفيديو وجعله يملأ الشاشة
   var video = document.querySelector('video, .video-js, .vjs-tech, iframe, .jw-video, .plyr');
   if(video){
     video.style.width='100vw';
@@ -206,7 +228,6 @@ try{
     video.style.left='0';
     video.style.display='block';
     video.style.margin='0';
-    // محاولة تشغيل الفيديو بملء الشاشة عبر API
     if(video.requestFullscreen){
       video.requestFullscreen().catch(function(e){});
     } else if(video.webkitRequestFullscreen){
@@ -216,7 +237,6 @@ try{
     } else if(video.msRequestFullscreen){
       video.msRequestFullscreen().catch(function(e){});
     }
-    // جعل جميع العناصر المحيطة تملأ الشاشة
     var parent = video.parentElement;
     while(parent && parent !== document.body){
       parent.style.width='100vw';
@@ -230,8 +250,6 @@ try{
       parent = parent.parentElement;
     }
   }
-  
-  // محاولة العثور على أي عنصر يحتوي على فيديو وجعله يملأ الشاشة
   var containers = document.querySelectorAll('.video-container, .player-container, .video-wrapper, .vjs-video, .jwplayer-container');
   containers.forEach(function(el){
     el.style.width='100vw';
@@ -245,7 +263,6 @@ try{
     el.style.margin='0';
     el.style.padding='0';
   });
-  
 }catch(e){}
 })();
 ''');
@@ -261,9 +278,7 @@ try{
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
       ]);
-      setState(() {
-        _isFullscreen = true;
-      });
+      setState(() => _isFullscreen = true);
       await Future.delayed(const Duration(milliseconds: 300));
       await _adjustVideoForFullscreen();
     } catch (e) {}
@@ -275,9 +290,7 @@ try{
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
       ]);
-      setState(() {
-        _isFullscreen = false;
-      });
+      setState(() => _isFullscreen = false);
       await _controller.reload();
     } catch (e) {}
   }
@@ -290,9 +303,33 @@ try{
     }
   }
 
+  /// معالجة زر الرجوع:
+  /// 1) إذا كان في ملء الشاشة → الخروج من ملء الشاشة أولاً
+  /// 2) إذا يمكن للويب فيو الرجوع (مثل من داخل فلم/حلقة) → الرجوع داخل الصفحة
+  /// 3) وإلا → الخروج من الشاشة للصفحة الرئيسية
+  Future<void> _handleBack() async {
+    if (_isFullscreen) {
+      _exitFullscreen();
+      return;
+    }
+    try {
+      if (await _controller.canGoBack()) {
+        await _controller.goBack();
+        return;
+      }
+    } catch (_) {}
+    if (mounted) Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope<Object?>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        await _handleBack();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       appBar: _isFullscreen
           ? null
@@ -318,8 +355,12 @@ try{
                 IconButton(
                   icon: const Icon(Icons.refresh_rounded),
                   onPressed: () {
-                    setState(() => _isLoading = true);
-                    _initWebView();
+                    if (_isDemoMode) {
+                      _showDemoMode();
+                    } else {
+                      setState(() => _isLoading = true);
+                      _loadRealUrl();
+                    }
                   },
                 ),
                 IconButton(
@@ -334,16 +375,81 @@ try{
         builder: (context, constraints) {
           return Container(
             width: constraints.maxWidth,
-            height: _isFullscreen
-                ? constraints.maxHeight
-                : constraints.maxHeight,
+            height: constraints.maxHeight,
             color: Colors.black,
             alignment: Alignment.center,
-            child: WebViewWidget(
-              controller: _controller,
+            child: Stack(
+              children: [
+                WebViewWidget(controller: _controller),
+                if (_isDemoMode && !_isFullscreen)
+                  Positioned(
+                    left: 0, right: 0, top: 0,
+                    child: Material(
+                      color: AppTheme.accentGold.withValues(alpha: 0.95),
+                      child: SafeArea(
+                        bottom: false,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.preview_rounded, size: 18, color: Color(0xFF2D1B69)),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  'وضع تجريبي - الخدمة متاحة عند الاتصال بالشبكة',
+                                  style: TextStyle(
+                                    color: Color(0xFF2D1B69),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: _loadRealUrl,
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF2D1B69),
+                                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                                  minimumSize: const Size(0, 32),
+                                ),
+                                child: const Text('الرابط الفعلي', style: TextStyle(fontSize: 11)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_isLoading && !_isFullscreen)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: Container(
+                        color: Colors.black,
+                        alignment: Alignment.center,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(
+                              color: widget.accentColor,
+                              strokeWidth: 3,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              widget.loadingText,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.7),
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           );
         },
+      ),
       ),
     );
   }

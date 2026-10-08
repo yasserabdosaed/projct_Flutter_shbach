@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'config/navigation.dart';
 import 'config/routes.dart';
 import 'config/theme.dart';
 import 'providers/app_provider.dart';
@@ -26,6 +27,7 @@ class ShabakatApp extends StatelessWidget {
         return MaterialApp(
           title: 'شبكة الحارث',
           debugShowCheckedModeBanner: false,
+          navigatorKey: appNavigatorKey,
           theme: AppTheme.darkTheme,
           initialRoute: AppRoutes.splash,
           onGenerateRoute: (settings) {

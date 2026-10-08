@@ -15,6 +15,7 @@ class LiveScreen extends StatelessWidget {
       title: 'البث المباشر',
       loadingText: 'جاري تحميل البث المباشر...',
       accentColor: AppTheme.accentOrange,
+      demoAsset: 'assets/demo/demo_live.html',
     );
   }
 }

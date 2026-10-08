@@ -7,19 +7,22 @@ class AppConstants {
   static const String collectionSuperAdmin = 'super_admin';
 
   // URLs
-  static const String defaultLoginUrl = 'http://h.net/index.html?v=2';
-  static const String defaultLiveUrl = 'http://20.20.20.20:876/videojs/index.html';
-  static const String defaultRestUrl = 'http://20.20.20.20:8096/web/index.html#!/home';
+  static const String defaultLoginUrl = 'http://www.h.net/index.html';
+  static const String defaultLiveUrl =
+      'http://20.20.20.20:876/videojs/index.html';
+  static const String defaultRestUrl =
+      'http://20.20.20.20:8096/web/index.html#!/home';
   static const String telegramGroupUrl = 'https://t.me/alkharith_net';
   static const String whatsappNumber = '+967777777777';
 
   // Firestore collections
   static const String collectionMessages = 'admin_messages';
   static const String collectionSuggestions = 'suggestions';
-  static const String collectionReviews = 'reviews';
   static const String collectionUsers = 'app_users';
   static const String collectionSpinPrizes = 'spin_prizes';
   static const String collectionUserSpinData = 'user_spin_data';
+  static const String collectionAppSettings = 'app_settings';
+  static const String docAppSettings = 'general';
 
   // SharedPreferences keys
   static const String keyUserVoucher = 'user_voucher';
@@ -41,7 +44,8 @@ class AppConstants {
   static const String keySuperAdminPassword = 'super_admin_password';
   static const String keyFcmServerKey = 'fcm_server_key';
   static const String defaultFcmServerKey = '';
-  static const String whatsappGroupUrl = 'https://chat.whatsapp.com/KDSpAN8ygvfCJcb5EB3IPI';
+  static const String whatsappGroupUrl =
+      'https://chat.whatsapp.com/KDSpAN8ygvfCJcb5EB3IPI';
 
   // Spin Wheel keys
   static const String keySpinSmallCounter = 'spin_small_counter';
@@ -53,4 +57,7 @@ class AppConstants {
   static const String keySpinSmallVouchers = 'spin_small_vouchers';
   static const String keySpinLargeVouchers = 'spin_large_vouchers';
   static const String keyProcessedVouchers = 'processed_vouchers';
+
+  // آخر قيمة رصيد معروفة (محددة من الصفحة الفعلية) - للاحتفاظ بها بين الشاشات
+  static const String keyRemainingBytes = 'remaining_bytes';
 }

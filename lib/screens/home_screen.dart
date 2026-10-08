@@ -138,6 +138,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   ),
                   const SizedBox(height: 16),
                   _buildMenuGrid(context),
+                  const SizedBox(height: 16),
+                  _buildDemoBanner(context),
                   const SizedBox(height: 24),
                   _buildBottomLinks(context),
                 ],
@@ -145,6 +147,82 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDemoBanner(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppTheme.accentGold.withValues(alpha: 0.12),
+            AppTheme.accent.withValues(alpha: 0.06),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppTheme.accentGold.withValues(alpha: 0.25),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppTheme.accentGold.withValues(alpha: 0.15),
+            ),
+            child: const Icon(
+              Icons.preview_rounded,
+              color: AppTheme.accentGold,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'وضع المعاينة التجريبية',
+                  style: TextStyle(
+                    color: AppTheme.accentGold,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 3),
+                Text(
+                  'جرّب الخدمات الآن بدون اتصال بالشبكة',
+                  style: TextStyle(
+                    color: AppTheme.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pushNamed(AppRoutes.rest);
+            },
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.accentGold,
+              backgroundColor: AppTheme.accentGold.withValues(alpha: 0.1),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text(
+              'استعراض',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
       ),
     );
   }

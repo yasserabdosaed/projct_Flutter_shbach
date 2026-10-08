@@ -15,6 +15,7 @@ class RestScreen extends StatelessWidget {
       title: 'منصة الاستراحة',
       loadingText: 'جاري تحميل منصة الاستراحة...',
       accentColor: AppTheme.accentGold,
+      demoAsset: 'assets/demo/demo_rest.html',
     );
   }
 }

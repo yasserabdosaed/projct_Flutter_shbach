@@ -1,7 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- السماح بدعم أندرويد 6.0 (API 23) على الرغم من أن بعض المكتبات تفرض 24 -->
+    <uses-sdk tools:overrideLibrary="io.flutter.plugins.sharedpreferences, io.flutter.plugins.urllauncher, com.dexterous.flutterlocalnotifications, io.flutter.plugins.flutter_plugin_android_lifecycle, io.flutter.plugins.webviewflutter, io.flutter.plugins.imagepicker" />
+
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="شبكة الحارث"
         android:name="${applicationName}"

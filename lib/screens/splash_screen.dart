@@ -92,7 +92,7 @@ class _SplashScreenState extends State<SplashScreen>
 
     _mainController.forward();
 
-    Timer(const Duration(seconds: 4), () {
+    Timer(const Duration(seconds: 2), () {
       if (mounted) {
         Navigator.of(context).pushReplacementNamed(AppRoutes.home);
       }
@@ -100,7 +100,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   void _generateStars() {
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 25; i++) {
       _stars.add(
         Star(
           x: _random.nextDouble(),
@@ -137,33 +137,30 @@ class _SplashScreenState extends State<SplashScreen>
         ),
         child: Stack(
           children: [
-            // ===== النجوم =====
-            ..._stars.map(
-              (star) => AnimatedBuilder(
+            // ===== النجوم (بدون ظلال ضبابية باهظة لتجنب التهنيج) =====
+            RepaintBoundary(
+              child: AnimatedBuilder(
                 animation: _mainController,
                 builder: (context, _) {
-                  final offset = (DateTime.now().millisecondsSinceEpoch / 1000 *
-                          star.speed *
-                          0.02) %
-                      1.0;
-                  return Positioned(
-                    left: star.x * MediaQuery.of(context).size.width,
-                    top: ((star.y + offset) % 1.0) *
-                        MediaQuery.of(context).size.height,
-                    child: Container(
-                      width: star.size,
-                      height: star.size,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: star.opacity * 0.6),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: AppTheme.accent.withValues(alpha: 0.3),
-                            blurRadius: star.size * 2,
+                  final t = DateTime.now().millisecondsSinceEpoch / 1000;
+                  final w = MediaQuery.of(context).size.width;
+                  final h = MediaQuery.of(context).size.height;
+                  return Stack(
+                    children: [
+                      for (final star in _stars)
+                        Positioned(
+                          left: star.x * w,
+                          top: ((star.y + (t * star.speed * 0.02)) % 1.0) * h,
+                          child: Container(
+                            width: star.size,
+                            height: star.size,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: star.opacity * 0.6),
+                              shape: BoxShape.circle,
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
+                        ),
+                    ],
                   );
                 },
               ),
@@ -218,50 +215,52 @@ class _SplashScreenState extends State<SplashScreen>
                         final lp = provider.logoPath;
                         final hasCustomLogo = lp != null && File(lp).existsSync();
 
-                        return AnimatedBuilder(
-                          animation: Listenable.merge(
-                              [_logoScaleAnim, _logoRotateAnim, _glowPulseAnim]),
-                          builder: (context, child) {
-                            return Transform.scale(
-                              scale: _logoScaleAnim.value,
-                              child: Transform.rotate(
-                                angle: _logoRotateAnim.value,
-                                child: Container(
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: AppTheme.accent.withValues(
-                                            alpha: 0.15 * _glowPulseAnim.value),
-                                        blurRadius:
-                                            50 * _glowPulseAnim.value,
-                                        spreadRadius:
-                                            20 * _glowPulseAnim.value,
-                                      ),
-                                    ],
-                                  ),
-                                  child: hasCustomLogo
-                                      ? ClipRRect(
-                                          borderRadius:
-                                              BorderRadius.circular(140),
-                                          child: Image.file(
-                                            File(lp),
+                        return RepaintBoundary(
+                          child: AnimatedBuilder(
+                            animation: Listenable.merge(
+                                [_logoScaleAnim, _logoRotateAnim, _glowPulseAnim]),
+                            builder: (context, child) {
+                              return Transform.scale(
+                                scale: _logoScaleAnim.value,
+                                child: Transform.rotate(
+                                  angle: _logoRotateAnim.value,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: AppTheme.accent.withValues(
+                                              alpha: 0.10 * _glowPulseAnim.value),
+                                          blurRadius:
+                                              30 * _glowPulseAnim.value,
+                                          spreadRadius:
+                                              10 * _glowPulseAnim.value,
+                                        ),
+                                      ],
+                                    ),
+                                    child: hasCustomLogo
+                                        ? ClipRRect(
+                                            borderRadius:
+                                                BorderRadius.circular(140),
+                                            child: Image.file(
+                                              File(lp),
+                                              width: 140,
+                                              height: 140,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          )
+                                        : SvgPicture.asset(
+                                            'assets/svg/logo.svg',
                                             width: 140,
                                             height: 140,
-                                            fit: BoxFit.cover,
+                                            fit: BoxFit.contain,
                                           ),
-                                        )
-                                      : SvgPicture.asset(
-                                          'assets/svg/logo.svg',
-                                          width: 140,
-                                          height: 140,
-                                          fit: BoxFit.contain,
-                                        ),
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         );
                       },
                     ),
@@ -284,17 +283,8 @@ class _SplashScreenState extends State<SplashScreen>
                                 letterSpacing: 4,
                                 shadows: [
                                   Shadow(
-                                    color: AppTheme.accent.withValues(alpha: 0.5),
-                                    blurRadius: 30,
-                                  ),
-                                  Shadow(
                                     color: AppTheme.accentGold.withValues(alpha: 0.3),
-                                    blurRadius: 40,
-                                  ),
-                                  Shadow(
-                                    color: Colors.black.withValues(alpha: 0.4),
-                                    blurRadius: 15,
-                                    offset: const Offset(0, 5),
+                                    blurRadius: 25,
                                   ),
                                 ],
                               ),

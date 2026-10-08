@@ -121,14 +121,6 @@ class ContactScreen extends StatelessWidget {
                     () => _url('tel:${p.phone}'),
                   ),
                 if (p.phone.isNotEmpty && p.phone != p.whatsapp) const SizedBox(height: 12),
-                _card(
-                  context,
-                  Icons.lightbulb_rounded,
-                  'اقتراحات',
-                  'شاركنا باقتراحاتك',
-                  AppTheme.accentGold,
-                  () => _suggestionDialog(context),
-                ),
                 const SizedBox(height: 40),
                 Text(
                   'الإصدار ${AppConstants.version}',
@@ -220,82 +212,5 @@ class ContactScreen extends StatelessWidget {
     if (await canLaunchUrlString(url)) {
       await launchUrlString(url, mode: LaunchMode.externalApplication);
     }
-  }
-
-  void _suggestionDialog(BuildContext context) {
-    final titleC = TextEditingController();
-    final bodyC = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.cardDark,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppTheme.accentGold.withValues(alpha: 0.15),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.lightbulb_outline, color: AppTheme.accentGold, size: 24),
-            ),
-            const SizedBox(width: 12),
-            const Text('اقتراحك', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: titleC,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: 'العنوان',
-                hintStyle: TextStyle(color: AppTheme.textMuted),
-                filled: true,
-                fillColor: Color(0xFF0D0520),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: bodyC,
-              maxLines: 3,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: 'التفاصيل',
-                hintStyle: TextStyle(color: AppTheme.textMuted),
-                filled: true,
-                fillColor: Color(0xFF0D0520),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('إلغاء', style: TextStyle(color: AppTheme.textMuted)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.accentGold,
-              foregroundColor: Colors.black,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              if (titleC.text.trim().isNotEmpty && bodyC.text.trim().isNotEmpty) {
-                context.read<AppProvider>().addSuggestion(titleC.text.trim(), bodyC.text.trim());
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم إرسال الاقتراح'), backgroundColor: AppTheme.success),
-                );
-              }
-            },
-            child: const Text('إرسال'),
-          ),
-        ],
-      ),
-    );
   }
 }

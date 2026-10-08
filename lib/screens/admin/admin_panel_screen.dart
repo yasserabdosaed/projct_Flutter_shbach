@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // مهم لـ Clipboard
 import 'package:provider/provider.dart';
@@ -6,6 +6,7 @@ import '../../config/routes.dart';
 import '../../config/theme.dart';
 import '../../models/admin_message.dart';
 import '../../models/spin_prize.dart';
+import '../../models/suggestion.dart';
 import '../../providers/app_provider.dart';
 import '../../services/storage_service.dart';
 
@@ -79,29 +80,36 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           ),
         ),
         child: SafeArea(
-          child: isSuper
-              ? (_tab == 0
-                  ? const _SendMsg()
-                  : _tab == 1
-                      ? const _Settings()
-                      : _tab == 2
-                          ? const _SpinWheelSettings()
-                          : _tab == 3
-                              ? const _SuggestionsList()
-                              : _tab == 4
-                                  ? const _AdminPassword()
-                                  : _tab == 5
-                                      ? const _UsersList()
-                                      : const _SuperPassword())
-              : (_tab == 0
-                  ? const _SendMsg()
-                  : _tab == 1
-                      ? const _Settings()
-                      : _tab == 2
-                          ? const _SpinWheelSettings()
-                          : _tab == 3
-                              ? const _SuggestionsList()
-                              : const _UsersList()),
+          child: Column(
+            children: [
+              const _LowCardsBanner(),
+              Expanded(
+                child: isSuper
+                    ? (_tab == 0
+                        ? const _SendMsg()
+                        : _tab == 1
+                            ? const _Settings()
+                            : _tab == 2
+                                ? const _SpinWheelSettings()
+                                : _tab == 3
+                                    ? const _SuggestionsList()
+                                    : _tab == 4
+                                        ? const _AdminPassword()
+                                        : _tab == 5
+                                            ? const _UsersList()
+                                            : const _SuperPassword())
+                    : (_tab == 0
+                        ? const _SendMsg()
+                        : _tab == 1
+                            ? const _Settings()
+                            : _tab == 2
+                                ? const _SpinWheelSettings()
+                                : _tab == 3
+                                    ? const _SuggestionsList()
+                                    : const _UsersList()),
+              ),
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: Container(
@@ -166,6 +174,64 @@ class _AdminPanelScreenState extends State<AdminPanelScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ========================== تنبيه نقص الكروت ==========================
+// يظهر للإدمن والسوبر إدمن فقط (فهو داخل لوحة الإدارة). يعرض الأصناف
+// التي انخفض مخزونها عن 5 كروت.
+class _LowCardsBanner extends StatelessWidget {
+  const _LowCardsBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppProvider>(
+      builder: (context, provider, _) {
+        final lowPrizes =
+            provider.spinPrizes.where((p) => p.cardCount < 5).toList();
+        if (lowPrizes.isEmpty) return const SizedBox.shrink();
+
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF4A0E0E), Color(0xFF2A0A0A)],
+            ),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppTheme.error.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded,
+                  color: AppTheme.error, size: 26),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'تنبيه: كروت أقل من 5',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      lowPrizes
+                          .map((p) =>
+                              '${p.name} (متبقي ${p.cardCount})')
+                          .join('، '),
+                      style: const TextStyle(
+                          color: AppTheme.textSecondary, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -426,6 +492,32 @@ class _MessagesList extends StatelessWidget {
                           }
                         },
                       ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded, color: AppTheme.error, size: 22),
+                        onPressed: () async {
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              backgroundColor: AppTheme.cardDark,
+                              title: const Text('حذف الرسالة', style: TextStyle(color: Colors.white)),
+                              content: const Text('هل تريد حذف هذه الرسالة نهائياً؟', style: TextStyle(color: AppTheme.textSecondary)),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('إلغاء', style: TextStyle(color: AppTheme.textMuted)),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('حذف', style: TextStyle(color: AppTheme.error)),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirmed == true) {
+                            await context.read<AppProvider>().deleteAdminMessage(msg.id);
+                          }
+                        },
+                      ),
                     ],
                   ),
                 );
@@ -543,6 +635,91 @@ class _SpinWheelSettingsState extends State<_SpinWheelSettings> {
         ],
       ),
     );
+  }
+
+  // ===== تعبئة مخزون الكروت لصنف =====
+  // يفتح مربع نص للصق أرقام الكروت (سطر لكل كرت) ويضيفها للمخزون.
+  Future<void> _fillCards(SpinPrize prize) async {
+    final listC = TextEditingController(
+      text: prize.cards.join('\n'),
+    );
+    final kept = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('تعبئة كروت: ${prize.name}'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'الصق أرقام الكروت (كل كرت في سطر):',
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: listC,
+                maxLines: 8,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  hintText: 'مثال:\nD1X3Q9\nD5K2M8\n...',
+                  hintStyle: TextStyle(color: AppTheme.textMuted),
+                  filled: true,
+                  fillColor: Color(0xFF0D1B2A),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(12)),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'المخزون الحالي: ${prize.cardCount} كرت',
+                  style: const TextStyle(color: AppTheme.accentGold, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('إلغاء', style: TextStyle(color: AppTheme.textMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, listC.text),
+            child: const Text('حفظ الكروت', style: TextStyle(color: AppTheme.success)),
+          ),
+        ],
+      ),
+    );
+    if (kept == null || !mounted) return;
+
+    final cards = kept
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (cards.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لم يتم إدخال أي كروت'), backgroundColor: AppTheme.error),
+      );
+      return;
+    }
+    await context.read<AppProvider>().replaceAllPrizeCards(prize.id, cards);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تم حفظ ${cards.length} كرت في صنف ${prize.name}'),
+          backgroundColor: AppTheme.success,
+        ),
+      );
+    }
   }
 
   @override
@@ -746,8 +923,38 @@ class _SpinWheelSettingsState extends State<_SpinWheelSettings> {
                                 'القيمة: ${prize.value} | النوع: ${isSmall ? 'صغيرة' : 'كبيرة'}',
                                 style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
                               ),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  Icon(
+                                    prize.cardCount < 5
+                                        ? Icons.warning_amber_rounded
+                                        : Icons.inventory_2_outlined,
+                                    size: 14,
+                                    color: prize.cardCount < 5
+                                        ? AppTheme.error
+                                        : AppTheme.accent,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${prize.cardCount} كرت',
+                                    style: TextStyle(
+                                      color: prize.cardCount < 5
+                                          ? AppTheme.error
+                                          : AppTheme.accent,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ],
                           ),
+                        ),
+                        IconButton(
+                          tooltip: 'تعبئة الكروت',
+                          icon: const Icon(Icons.library_add_rounded, color: AppTheme.accentGold, size: 22),
+                          onPressed: () => _fillCards(prize),
                         ),
                         IconButton(
                           icon: const Icon(Icons.edit_rounded, color: AppTheme.accent, size: 22),
@@ -1346,121 +1553,30 @@ class _SuggestionsList extends StatelessWidget {
         return ListView.builder(
           padding: const EdgeInsets.all(16),
           itemCount: provider.suggestions.length,
-          itemBuilder: (context, index) {
-            final s = provider.suggestions[index];
-            final isPending = s.status == 'pending';
-            return Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    AppTheme.cardDark.withValues(alpha: 0.8),
-                    AppTheme.cardDark.withValues(alpha: 0.4),
-                  ],
-                ),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: isPending
-                      ? AppTheme.accentGold.withValues(alpha: 0.2)
-                      : Colors.green.withValues(alpha: 0.2),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: isPending
-                        ? AppTheme.accentGold.withValues(alpha: 0.05)
-                        : Colors.green.withValues(alpha: 0.05),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: isPending
-                          ? AppTheme.accentGold.withValues(alpha: 0.1)
-                          : Colors.green.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(
-                      isPending ? Icons.pending_outlined : Icons.check_circle_outline,
-                      color: isPending ? AppTheme.accentGold : Colors.green,
-                      size: 24,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          s.title,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            fontSize: 16,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          s.body,
-                          style: TextStyle(
-                            color: AppTheme.textSecondary,
-                            fontSize: 14,
-                            height: 1.4,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.access_time_rounded,
-                              size: 14,
-                              color: AppTheme.textMuted.withValues(alpha: 0.6),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _formatDate(s.createdAt),
-                              style: TextStyle(
-                                color: AppTheme.textMuted.withValues(alpha: 0.6),
-                                fontSize: 12,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: isPending
-                                    ? AppTheme.accentGold.withValues(alpha: 0.15)
-                                    : Colors.green.withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                isPending ? 'قيد المراجعة' : 'تمت',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: isPending ? AppTheme.accentGold : Colors.green,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
+          itemBuilder: (context, index) =>
+              _SuggestionCard(suggestion: provider.suggestions[index]),
         );
       },
     );
+  }
+}
+
+// ===== بطاقة اقتراح: محادثة خاصة بين المستخدم والإدارة =====
+class _SuggestionCard extends StatefulWidget {
+  final Suggestion suggestion;
+  const _SuggestionCard({required this.suggestion});
+
+  @override
+  State<_SuggestionCard> createState() => _SuggestionCardState();
+}
+
+class _SuggestionCardState extends State<_SuggestionCard> {
+  final _replyController = TextEditingController();
+
+  @override
+  void dispose() {
+    _replyController.dispose();
+    super.dispose();
   }
 
   String _formatDate(DateTime dt) {
@@ -1472,8 +1588,244 @@ class _SuggestionsList extends StatelessWidget {
     if (diff.inDays < 7) return 'منذ ${diff.inDays} يوم';
     return '${dt.day}/${dt.month}/${dt.year}';
   }
-}
 
+  void _sendAdminReply() {
+    final text = _replyController.text.trim();
+    if (text.isEmpty) return;
+    context
+        .read<AppProvider>()
+        .replyToSuggestion(widget.suggestion.id, text, 'admin');
+    _replyController.clear();
+    FocusScope.of(context).unfocus();
+  }
+
+  Future<void> _confirmDelete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.cardDark,
+        title: const Text('حذف الاقتراح', style: TextStyle(color: Colors.white)),
+        content: const Text('هل تريد حذف هذا الاقتراح ومحادثته نهائياً؟',
+            style: TextStyle(color: AppTheme.textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('إلغاء', style: TextStyle(color: AppTheme.textMuted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('حذف', style: TextStyle(color: AppTheme.error)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await context.read<AppProvider>().deleteSuggestion(widget.suggestion.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.suggestion;
+    final isPending = s.status == 'pending';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            AppTheme.cardDark.withValues(alpha: 0.8),
+            AppTheme.cardDark.withValues(alpha: 0.4),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isPending
+              ? AppTheme.accentGold.withValues(alpha: 0.2)
+              : Colors.green.withValues(alpha: 0.2),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: isPending
+                ? AppTheme.accentGold.withValues(alpha: 0.05)
+                : Colors.green.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // رأس: صاحب الاقتراح + العنوان + الحالة + الحذف
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: isPending
+                      ? AppTheme.accentGold.withValues(alpha: 0.1)
+                      : Colors.green.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  isPending ? Icons.pending_outlined : Icons.check_circle_outline,
+                  color: isPending ? AppTheme.accentGold : Colors.green,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      s.title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(Icons.person_rounded,
+                            size: 13, color: AppTheme.textMuted.withValues(alpha: 0.7)),
+                        const SizedBox(width: 4),
+                        Text(
+                          s.userName,
+                          style: TextStyle(
+                            color: AppTheme.textMuted.withValues(alpha: 0.7),
+                            fontSize: 12,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Icon(Icons.access_time_rounded,
+                            size: 13, color: AppTheme.textMuted.withValues(alpha: 0.5)),
+                        const SizedBox(width: 4),
+                        Text(
+                          _formatDate(s.createdAt),
+                          style: TextStyle(
+                            color: AppTheme.textMuted.withValues(alpha: 0.5),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: isPending
+                            ? AppTheme.accentGold.withValues(alpha: 0.15)
+                            : Colors.green.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        isPending ? 'قيد المراجعة' : 'تمت',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: isPending ? AppTheme.accentGold : Colors.green,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline_rounded,
+                    color: AppTheme.error, size: 22),
+                onPressed: _confirmDelete,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // نص الاقتراح (أول رسالة من المستخدم)
+          _bubble(s.body, isMine: false),
+          // رسائل المحادثة
+          ...s.replies.map((rep) => _bubble(rep.text, isMine: rep.sender == 'admin')),
+          const SizedBox(height: 8),
+          // كتابة رد الإدارة
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _replyController,
+                  textDirection: TextDirection.rtl,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: InputDecoration(
+                    hintText: 'اكتب رد الإدارة هنا...',
+                    hintStyle: TextStyle(
+                        color: AppTheme.textMuted.withValues(alpha: 0.7),
+                        fontSize: 13),
+                    filled: true,
+                    fillColor: const Color(0xFF0D1B2A),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(color: AppTheme.accent, width: 1.2),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _sendAdminReply,
+                style: IconButton.styleFrom(
+                  backgroundColor: AppTheme.accent.withValues(alpha: 0.15),
+                ),
+                icon: const Icon(Icons.send_rounded,
+                    color: AppTheme.accent, size: 20),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bubble(String text, {required bool isMine}) {
+    // في خيار الإدارة: رسالة الاقتراح/المستخدم جهة اليمين، ورد الإدارة جهة اليسار
+    final fromAdmin = isMine;
+    return Align(
+      alignment: fromAdmin ? Alignment.centerLeft : Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.only(top: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: const BoxConstraints(maxWidth: 300),
+        decoration: BoxDecoration(
+          color: fromAdmin
+              ? AppTheme.accent.withValues(alpha: 0.85)
+              : Colors.white.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(14),
+            topRight: const Radius.circular(14),
+            bottomLeft: Radius.circular(fromAdmin ? 4 : 14),
+            bottomRight: Radius.circular(fromAdmin ? 14 : 4),
+          ),
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: fromAdmin ? Colors.white : AppTheme.textSecondary,
+            fontSize: 13,
+            height: 1.4,
+          ),
+        ),
+      ),
+    );
+  }
+}
 // ========================== قائمة المستخدمين ==========================
 class _UsersList extends StatefulWidget {
   const _UsersList();
@@ -1513,6 +1865,8 @@ class _UsersListState extends State<_UsersList> {
             final blocked = user['blocked'] as bool? ?? false;
             final token = user['docId'] as String? ?? user['fcmToken'] as String? ?? '';
             final lastActive = (user['lastActive'] as dynamic)?.toDate() as DateTime?;
+            final mac = user['mac'] as String? ?? '';
+            final deviceName = user['deviceName'] as String? ?? '';
 
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
@@ -1591,6 +1945,52 @@ class _UsersListState extends State<_UsersList> {
                             ],
                           ],
                         ),
+                        const SizedBox(height: 8),
+                        if (deviceName.isNotEmpty)
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.smartphone_rounded,
+                                size: 14,
+                                color: AppTheme.textMuted.withValues(alpha: 0.6),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  deviceName,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.75),
+                                    fontSize: 12,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        if (mac.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.lan_outlined,
+                                size: 14,
+                                color: AppTheme.textMuted.withValues(alpha: 0.6),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  mac,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.75),
+                                    fontSize: 12,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  textDirection: TextDirection.ltr,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),

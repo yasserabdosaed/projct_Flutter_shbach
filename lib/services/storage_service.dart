@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/constants.dart';
 import '../models/admin_message.dart';
@@ -13,6 +14,20 @@ class StorageService {
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
+    _ensureDeviceId();
+  }
+
+  // ===== معرّف الجهاز الدائم (يمثّل المستخدم/العجلة الخاصة) =====
+  String? _deviceId;
+  String get deviceId => _deviceId ?? 'unknown-device';
+  void _ensureDeviceId() {
+    var id = _prefs!.getString('app_device_id');
+    if (id == null || id.isEmpty) {
+      final rand = Random.secure();
+      id = List.generate(16, (_) => rand.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+      _prefs!.setString('app_device_id', id);
+    }
+    _deviceId = id;
   }
 
   // ===== الجلسة =====
@@ -40,6 +55,19 @@ class StorageService {
     await _prefs!.remove(AppConstants.keyUserVoucher);
     await _prefs!.remove(AppConstants.keySessionStart);
     await _prefs!.remove(AppConstants.keyGatewayIp);
+  }
+
+  // ===== الرصيد المتبقي (يُحفظ حتى يظهر في الصفحة الرئيسية) =====
+  int get remainingBytes {
+    final v = _prefs!.getInt(AppConstants.keyRemainingBytes) ?? -1;
+    return v > 0 ? v : -1;
+  }
+  Future<void> saveRemainingBytes(int bytes) async {
+    if (bytes <= 0) return;
+    await _prefs!.setInt(AppConstants.keyRemainingBytes, bytes);
+  }
+  Future<void> clearRemainingBytes() async {
+    await _prefs!.remove(AppConstants.keyRemainingBytes);
   }
 
   // ===== الروابط =====
@@ -80,6 +108,19 @@ class StorageService {
     return list
         .map((e) => AdminMessage.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  // ===== حالة قراءة الرسائل (تُحفظ محلياً حتى تبقى "مقروءة" بعد إغلاق التطبيق) =====
+  Set<String> getReadMessageIds() {
+    return (_prefs!.getStringList('read_message_ids') ?? []).toSet();
+  }
+  Future<void> addReadMessageId(String id) async {
+    final set = getReadMessageIds()..add(id);
+    await _prefs!.setStringList('read_message_ids', set.toList());
+  }
+  Future<void> removeReadMessageId(String id) async {
+    final set = getReadMessageIds()..remove(id);
+    await _prefs!.setStringList('read_message_ids', set.toList());
   }
 
   // ===== حالة تسجيل الدخول الإداري =====
@@ -266,9 +307,18 @@ class StorageService {
     return (await getLargeVouchers()).length;
   }
 
+  // ===== دوال تتبع إشعارات نقص الكروت (لكل صنف) =====
+  // نتذكر آخر عدد تم إرسال إشعار عنده، لنرسل التنبيه مرة واحدة فقط
+  // (مثلاً عند 4) ونتجنّب الإرسال المتكرر لكل سحب.
+  int? getLastLowCardsNotified(String prizeId) {
+    return _prefs?.getInt('low_cards_notified_$prizeId');
+  }
+  Future<void> setLastLowCardsNotified(String prizeId, int count) async {
+    await _prefs?.setInt('low_cards_notified_$prizeId', count);
+  }
+
   // إعادة تعيين بيانات العجلة
-  Future<void> resetSpinData(String type) async {
-    if (type == 'small') {
+  Future<void> resetSpinData(String type) async {    if (type == 'small') {
       await _prefs?.remove(AppConstants.keySpinSmallVouchers);
       await _prefs?.remove(AppConstants.keySpinSmallCounter);
       await _prefs?.setBool(AppConstants.keySpinSmallAvailable, false);
@@ -294,5 +344,30 @@ class StorageService {
       final count = await getLargeSpinCounter();
       await saveLargeSpinCounter((count - 1).clamp(0, 999));
     }
+  }
+
+  // ===== التنظيف الأسبوعي للكروت المخزَّنة على الجهاز =====
+  // لكي لا تكبر مساحة التخزين ولا تحجب كروتاً جديدة، نحذف الكروت والعدادات
+  // المحفوظة محلياً كل أسبوع. الكرت الجديد يُحتسب بعد ذلك كنقطة جديدة.
+  Future<bool> weeklyCleanupIfDue() async {
+    final now = DateTime.now();
+    final last = _prefs?.getInt('weekly_cleanup_time');
+    if (last != null) {
+      final lastDate = DateTime.fromMillisecondsSinceEpoch(last);
+      if (now.difference(lastDate).inDays < 7) return false;
+    }
+    await _storageCleanup();
+    await _prefs?.setInt('weekly_cleanup_time', now.millisecondsSinceEpoch);
+    return true;
+  }
+
+  Future<void> _storageCleanup() async {
+    await _prefs?.remove(AppConstants.keyProcessedVouchers);
+    await _prefs?.remove(AppConstants.keySpinSmallVouchers);
+    await _prefs?.remove(AppConstants.keySpinLargeVouchers);
+    await _prefs?.remove(AppConstants.keySpinSmallCounter);
+    await _prefs?.remove(AppConstants.keySpinLargeCounter);
+    await _prefs?.setBool(AppConstants.keySpinSmallAvailable, false);
+    await _prefs?.setBool(AppConstants.keySpinLargeAvailable, false);
   }
 }

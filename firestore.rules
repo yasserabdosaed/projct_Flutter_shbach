@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =====================================================================
+    // ملاحظة أمنية مهمة:
+    // التطبيق لا يستخدم Firebase Authentication حالياً، لذا كل الطلبات تأتي
+    // بدون هوية (request.auth == null). القواعد أدناه مصممة لتُبقي التطبيق
+    // عاملاً، مع فرض حماية هيكلية عند الإمكان.
+    //
+    // لتأمين الأدمن/الكروت بشكل صارم، يُنصح بتفعيل "تسجيل الدخول المجهول"
+    // (Anonymous Auth) في Firebase ثم استخدام request.auth.uid في القواعد.
+    // =====================================================================
+
+    // ===== السجل المرجعي لمنع تكرار الكرت عالمياً =====
+    // كل كرت = مستند باسمه. المعاملة تضمن الخلق مرة واحدة فقط.
+    // نمنع التعديل/الحذف بعد الخلق، ونطلب حقل claimedAt.
+    match /spin_claims/{key} {
+      allow create: if request.resource.data.keys().hasAll(['claimedAt']);
+      allow read: if false;
+      allow update, delete: if false;
+    }
+
+    // ===== عجلة الحظ - الجوائز (قراءة للجميع، إدارة/سحب من التطبيق) =====
+    match /spin_prizes/{prizeId} {
+      allow read: if true;
+      allow write: if true; // يحتاج التطبيق للسحب الذرّي (drawCard)
+    }
+
+    // ===== بيانات عجلة كل كرت =====
+    match /user_spin_data/{voucher} {
+      allow read, write: if true;
+    }
+
+    // ===== بيانات فئة الكرت (قراءة عامة) =====
+    match /voucher_meta/{voucher} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // ===== إعدادات التطبيق المشتركة (روابط + تواصل + أذونات الأدمن) =====
+    // القراءة عامة لأن التطبيق يحتاجها لكل المستخدمين.
+    // الكتابة من الأدمن فقط (لكن بلا Auth لا يمكن تمييزه - انظر الملاحظة أعلاه).
+    match /app_settings/{doc} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // ===== إعدادات الأدمن (كلمات المرور) =====
+    // يُنصح بشدة بحمايتها بعد تفعيل Anonymous Auth.
+    match /admin_settings/{doc} {
+      allow read, write: if true;
+    }
+
+    // ===== رسائل الإدارة (قراءة عامة - تُعرض في التطبيق) =====
+    match /admin_messages/{docId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll(['title', 'body']);
+      allow update, delete: if true; // يتحكم بها الأدمن
+    }
+
+    // ===== اقتراحات العملاء =====
+    match /suggestions/{docId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll(['title', 'body', 'status']);
+      allow update, delete: if true;
+    }
+
+    // ===== آراء العملاء =====
+    match /reviews/{docId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll(['userName', 'comment', 'rating']);
+      allow update, delete: if true;
+    }
+
+    // ===== مستخدمو التطبيق (سجل أجهزة FCM) =====
+    match /app_users/{userId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAny(['fcmToken', 'lastActive']);
+      allow update, delete: if true;
+    }
+
+    // =====================================================================
+    // الحذف التلقائي بعد شهرين: لا يتم عبر القواعد بل عبر "سياسات TTL"
+    // (Time-to-live) من Firebase Console، وهي مجانية وتحذف تلقائياً.
+    //
+    // المجموعات الموصى بضبط TTL عليها (استناداً إلى حقل createdAt):
+    //   - admin_messages
+    //   - suggestions
+    //   - reviews
+    //   (اختيارياً: app_users لسجل الأجهزة غير النشطة)
+    //
+    // الخطوات في Firebase Console:
+    //   Firestore → الحقول/المجموعات → TTL Policy → أضف سياسة:
+    //   المجموعة: admin_messages ، الحقل: createdAt ، الإبقاء: شهرين.
+    //   كررها لـ suggestions و reviews (و app_users اختيارياً).
+    // =====================================================================
+  }
+}

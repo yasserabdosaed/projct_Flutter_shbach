@@ -7,7 +7,7 @@ plugins {
     id("com.google.gms.google-services")
 }
 
-// قراءة بيانات التوقيع
+// ظ‚ط±ط§ط،ط© ط¨ظٹط§ظ†ط§طھ ط§ظ„طھظˆظ‚ظٹط¹
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 
@@ -37,7 +37,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shabakat.app"
-        minSdk = flutter.minSdkVersion
+        minSdk = 21 + 2
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -48,7 +48,7 @@ android {
         release {
             signingConfig = signingConfigs.getByName("release")
 
-            // إعدادات النشر
+            // R8 معطّل لمنع الأعطال
             isMinifyEnabled = false
             isShrinkResources = false
         }
@@ -75,3 +75,4 @@ dependencies {
 flutter {
     source = "../.."
 }
+

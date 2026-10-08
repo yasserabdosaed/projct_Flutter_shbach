@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>منصة الاستراحة - شبكة الحارث</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI', Tahoma, Arial, sans-serif; }
+  body {
+    background:radial-gradient(circle at top, #1A0A3E 0%, #0F0328 70%);
+    min-height:100vh; color:#fff; padding-bottom:40px;
+  }
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.08);
+    background:rgba(15,3,40,0.8); position:sticky; top:0; z-index:10;
+  }
+  header h1 { font-size:18px; font-weight:700; }
+  header span { font-size:11px; color:#C4B5D4; display:block; margin-top:2px; }
+  .banner {
+    margin:16px 20px; padding:12px 16px; border-radius:14px; font-size:12px; line-height:1.8;
+    background:rgba(255,215,0,0.08); border:1px solid rgba(255,215,0,0.2); color:#FFD700;
+  }
+  .grid {
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr));
+    gap:14px; padding:0 20px; margin-top:18px;
+  }
+  .item {
+    background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08);
+    border-radius:16px; overflow:hidden; cursor:pointer; transition:transform .15s;
+  }
+  .item:active { transform:scale(0.97); }
+  .thumb {
+    height:110px; display:flex; align-items:center; justify-content:center;
+    font-size:40px; background:linear-gradient(135deg,#2A1A5E,#1A0A3E);
+  }
+  .item .info { padding:10px 12px; }
+  .item .title { font-size:13px; font-weight:600; }
+  .item .desc { font-size:11px; color:#8A7A9A; margin-top:3px; }
+  .section-title { font-size:16px; font-weight:700; margin:26px 20px 4px; }
+  .footer-note { text-align:center; font-size:11px; color:#8A7A9A; margin-top:28px; line-height:1.8; }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>منصة الاستراحة</h1>
+      <span>أفلام ومسلسلات ومسرحيات</span>
+    </div>
+    <div style="font-size:28px">🎬</div>
+  </header>
+
+  <div class="banner">وضع تجريبي: هذه معاينة لمنصة الاستراحة. المحتوى الفعلي متاح على شبكة الحارث.</div>
+
+  <div class="section-title">الأحدث</div>
+  <div class="grid" id="latest"></div>
+
+  <div class="section-title">الأكثر مشاهدة</div>
+  <div class="grid" id="popular"></div>
+
+  <div class="footer-note">© 2026 شبكة الحارث - جميع الحقوق محفوظة</div>
+
+<script>
+  var movies = [
+    ['🎬','فيلم 2026','أكشن ودراما'],['📺','مسلسل حارث','دراما خليجية'],
+    ['🎭','مسرحية','كوميديا'],['🎵','حفلات','عربية'],
+    ['🏆','مباريات','رياضة'],['🎞️','وثائقي','طبيعة'],
+    ['🎤','برنامج','منوعات'],['📽️','أفلام كلاسيكية','ذهبيات']
+  ];
+  function render(target, list) {
+    document.getElementById(target).innerHTML = list.map(function(m){
+      return '<div class="item"><div class="thumb">'+m[0]+'</div><div class="info">'+
+        '<div class="title">'+m[1]+'</div><div class="desc">'+m[2]+'</div></div></div>';
+    }).join('');
+  }
+  render('latest', movies);
+  render('popular', movies.slice().reverse());
+</script>
+</body>
+</html>
